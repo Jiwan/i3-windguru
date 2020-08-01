@@ -1,0 +1,3 @@
+return md5("wgsec-" + a).substr(-18, 8);
+
+where a is the is the full request parameters as strings without md5 already in it
