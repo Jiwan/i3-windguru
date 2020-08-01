@@ -4,7 +4,7 @@ use std::process::{Stdio};
 use tokio::process::{Command, Child};
 use tokio::io::{BufReader, AsyncBufReadExt};
 use tokio::runtime::Runtime;
-use crate::output::{Sender};
+use crate::output::{Channel};
 
 const I3STATUS_COMMAND : &str = "i3status"; 
 
@@ -37,19 +37,14 @@ impl I3Status {
         I3Status{i3status_process, buf_reader : buf_reader}
     }
 
-    pub async fn start_read_loop(&mut self, sender: &mut Sender) {
+    pub async fn start_read_loop(&mut self, channel: &mut Channel) {
         loop {
             let mut string = String::new();   
             let _ = self.buf_reader.read_line(&mut string).await;
             let start_index = if string.starts_with(",") { 1 } else { 0 };
 
             let values : Vec<serde_json::Value> = serde_json::from_str(&string[start_index..string.len()]).unwrap();
-
-            for value in values {
-                if let Object(map) = value {
-                    sender.send(map).await.unwrap();
-                }
-            }
+            channel.send_update_message(values).await;
         }
     }
 }

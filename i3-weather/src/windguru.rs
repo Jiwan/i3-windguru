@@ -4,7 +4,8 @@ use std::fmt::{format};
 use crypto::digest::{Digest};
 use itertools::{Itertools};
 use serde::{Deserialize};
-use crate::output::{Sender};
+use serde_json::{json};
+use crate::output::{Channel};
 
 pub struct Windguru {
    client: Client,
@@ -37,6 +38,18 @@ struct StationDataCurrent {
     unixtime:u32
 }
 
+pub fn status_smiley(wind_avg : f32) -> &'static str {
+    if wind_avg < 8.0 {
+        "😠"
+    } else if wind_avg < 12.0 {
+        "😊"
+    } else if wind_avg < 22.0 {
+        "🏄"
+    } else {
+        "💀"
+    }
+}
+
 impl Windguru {
     pub fn new(station: u64) -> Self {
         let mut headers = header::HeaderMap::new();
@@ -54,11 +67,11 @@ impl Windguru {
         Windguru{client, station}
     }
 
-    pub async fn start_fetch_loop(&self, sender : &mut Sender) {
-        let mut interval = time::interval(Duration::from_secs(60));
+    pub async fn start_fetch_loop(&self, channel : &mut Channel) {
+        let mut request_interval = time::interval(Duration::from_secs(60));
 
         loop {
-            interval.tick().await;
+            request_interval.tick().await;
 
             let query = &[
                 ("q", "station_data_current"),
@@ -74,15 +87,50 @@ impl Windguru {
                 .query(md5)
                 .send().await;
 
-            if let Ok(body) = response {
-                let stationDataCurrent = body.json::<StationDataCurrent>().await.unwrap();
-                
-                let mut dataToSend = serde_json::Map::new();
-                dataToSend.insert("name".to_owned(), serde_json::Value::String("windguru".to_owned()));
-                dataToSend.insert("markup".to_owned(), serde_json::Value::String("none".to_owned()));
-                dataToSend.insert("full_text".to_owned(), serde_json::Value::String(std::format!("Wind Erstakvik: {}", stationDataCurrent.wind_avg)));
-                sender.send(dataToSend).await.unwrap();
+            let mut windguru_update = json!([{"name" : "windguru", "markup": "none", "full_text": "error"}]);
+            
+            match response {
+                Ok(body) => {
+                    match body.json::<StationDataCurrent>().await {
+                        Ok(data) => {
+                            let mut message_interval = time::interval(Duration::from_secs(2));
+
+                            message_interval.tick().await;
+
+                            let text = format!("{smiley} Erstakvik: {}kts {smiley}", data.wind_avg, smiley = status_smiley(data.wind_avg));
+                            windguru_update[0]["full_text"] = json!(text);
+                            channel.send_update_message(windguru_update.as_array().unwrap().to_vec()).await;
+
+                            message_interval.tick().await;
+
+                            let text = format!("Max: {}kts - Min: {}kts Dir: {}", data.wind_max, data.wind_min, data.wind_direction, );
+                            windguru_update[0]["full_text"] = json!(text);
+                            channel.send_update_message(windguru_update.as_array().unwrap().to_vec()).await;
+                        
+                            message_interval.tick().await;
+
+                            let text = format!("Temp: {}°C", data.temperature);
+                            windguru_update[0]["full_text"] = json!(text);
+                            channel.send_update_message(windguru_update.as_array().unwrap().to_vec()).await;
+
+                            message_interval.tick().await;
+
+                            let text = format!("{smiley} Erstakvik: {}kts {smiley}", data.wind_avg, smiley = status_smiley(data.wind_avg));
+                            windguru_update[0]["full_text"] = json!(text);
+                            channel.send_update_message(windguru_update.as_array().unwrap().to_vec()).await;
+
+                            continue;
+                        }
+
+                        Err(err) => eprintln!("Error parsing result of windguru: {}", err)
+                    }
+                }, 
+                Err(err)  => {
+                    eprintln!("Error while fecthing windguru data: {}", err);
+                }
             }
+
+            channel.send_update_message(windguru_update.as_array().unwrap().to_vec()).await;
         }
 
     }
